@@ -3,6 +3,29 @@
 #include <iostream>
 #include <string>
 
+// --- NEW: Authentication Check ---
+// Checks if the process token has elevated privileges (Admin)
+bool IsAppRunningAsAdmin() {
+    BOOL fIsElevated = FALSE;
+    HANDLE hToken = NULL;
+    
+    // Open the Access Token of the current process
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        TOKEN_ELEVATION elevation;
+        DWORD dwSize;
+        
+        // Query the Token for "Elevation" status
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize)) {
+            fIsElevated = elevation.TokenIsElevated;
+        }
+    }
+    
+    if (hToken) {
+        CloseHandle(hToken);
+    }
+    return fIsElevated;
+}
+
 // Helper to determine threat level
 std::string get_severity(DWORD eventCode) {
     if (eventCode == CREATE_PROCESS_DEBUG_EVENT) return "HIGH";
@@ -33,6 +56,13 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // --- NEW: Broadcast Authentication Level ---
+    if (IsAppRunningAsAdmin()) {
+        std::cout << "AUTH_LEVEL|ADMIN|System has granted full kernel access." << std::endl;
+    } else {
+        std::cout << "AUTH_LEVEL|USER|Limited rights. Sandboxed mode." << std::endl;
+    }
+
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
@@ -44,21 +74,20 @@ int main(int argc, char *argv[]) {
     // 1. Launch the target process in DEBUG mode
     if (!CreateProcessA(
             NULL, 
-            (LPSTR)cmd.c_str(), // Command line
+            (LPSTR)cmd.c_str(), 
             NULL, NULL, FALSE, 
-            DEBUG_ONLY_THIS_PROCESS, // <--- The Magic Flag
+            DEBUG_ONLY_THIS_PROCESS, 
             NULL, NULL, &si, &pi)
     ) {
         std::cerr << "CreateProcess failed (" << GetLastError() << ")." << std::endl;
         return 1;
     }
 
-    // 2. The Loop: Wait for events from the Operating System
+    // 2. The Loop: Wait for events
     DEBUG_EVENT debugEvent = {0};
     bool isRunning = true;
 
     while (isRunning) {
-        // Wait for a debug event
         if (!WaitForDebugEvent(&debugEvent, INFINITE))
             break;
 
@@ -68,12 +97,10 @@ int main(int argc, char *argv[]) {
         // Print in format: NAME|SEVERITY|ID
         std::cout << name << "|" << severity << "|" << debugEvent.dwProcessId << std::endl;
 
-        // Check if the process exited
         if (debugEvent.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) {
             isRunning = false;
         }
 
-        // Resume the process
         ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, DBG_CONTINUE);
     }
 
